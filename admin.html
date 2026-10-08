@@ -1396,6 +1396,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
         import { getDatabase, ref, set, onValue, push, update, remove, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
         import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+        import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
 
         // CONFIG
         const firebaseConfig = {
@@ -1411,7 +1412,49 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
         const auth = getAuth(app);
-        const ADMIN_UID = "voKKZLbaHNX3HDxOa8lAvaxZGSW2";
+        const VAPID_KEY = "BPkCE32UnjWTBCwxGxqkQi1IGkEavbPFBP1cOdqJoJHBD2b1xatc0Ztxyvk8H1owsBPDqHeqP2vs5JuWcsKc5vk";
+        let messaging = null;
+        let currentAdminFcmToken = null;
+        const ADMIN_UID = "CfJCowlSGJSlR5ZqvBZYUpKcnYh1";
+
+        // --- ADMIN WEB PUSH / FCM ---
+        async function initAdminPushNotifications(user) {
+            if (!user || user.uid !== ADMIN_UID) return;
+            try {
+                if (!(await isSupported())) return;
+                const permission = await Notification.requestPermission();
+                if (permission !== 'granted') {
+                    console.warn('Admin notification permission was not granted.');
+                    return;
+                }
+
+                const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+                messaging = getMessaging(app);
+                const token = await getToken(messaging, {
+                    vapidKey: VAPID_KEY,
+                    serviceWorkerRegistration: registration
+                });
+                if (!token) return;
+                currentAdminFcmToken = token;
+
+                await push(ref(db, `fcmTokens/admin/${user.uid}`), {
+                    token,
+                    updatedAt: Date.now(),
+                    platform: 'web'
+                });
+
+                onMessage(messaging, (payload) => {
+                    console.log('Admin foreground FCM message:', payload);
+                    const title = payload.notification?.title || payload.data?.title || 'Admin Notification';
+                    const body = payload.notification?.body || payload.data?.body || '';
+                    if (Notification.permission === 'granted') {
+                        new Notification(title, { body, icon: '/favicon.ico', tag: payload.data?.tag || 'admin-push' });
+                    }
+                });
+            } catch (error) {
+                console.error('Admin FCM setup failed:', error);
+            }
+        }
 
         // --- THEME CHANGER ---
         window.toggleTheme = () => {
@@ -1521,6 +1564,7 @@
             } else {
                 document.getElementById('admin-login-overlay').style.display = 'none';
                 initAdmin();
+                initAdminPushNotifications(user);
             }
         });
 
@@ -1738,7 +1782,16 @@
             const name = document.getElementById('cat-name').value;
             const img = document.getElementById('cat-img').value;
             if (!name) return alert("Enter Name");
-            push(ref(db, 'categories'), { name, img }).then(() => { closeModal('add-category-modal'); });
+            push(ref(db, 'categories'), { name, img }).then(() => {
+                return push(ref(db, 'notifications'), {
+                    title: "New Game Category",
+                    body: `${name} category has been added.`,
+                    type: "category",
+                    target: "all",
+                    timestamp: Date.now(),
+                    date: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString()
+                });
+            }).then(() => { closeModal('add-category-modal'); });
         };
 
         window.deleteNode = (path) => { if (confirm("Delete?")) remove(ref(db, path)); };
@@ -1820,6 +1873,17 @@
                 gameModeName: type + " - " + map,
                 categoryId: catId, categoryName: catName, type,
                 room_id: roomId, room_pass: roomPass
+            }).then(() => {
+                return push(ref(db, 'notifications'), {
+                    title: "New Tournament",
+                    body: `${title} is now available in ${catName}.`,
+                    type: "match",
+                    target: "all",
+                    matchTitle: title,
+                    categoryId: catId,
+                    timestamp: Date.now(),
+                    date: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString()
+                });
             }).then(() => {
                 alert("Match Created!");
                 closeModal('add-match-modal');
@@ -2172,7 +2236,14 @@
             const body = document.getElementById('notif-body').value;
             if (!title) return alert("Title required");
 
-            const payload = { title, body, date: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString() };
+            const payload = {
+                title,
+                body,
+                type: "notice",
+                target: "all",
+                timestamp: Date.now(),
+                date: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString()
+            };
 
             if (id) {
                 update(ref(db, 'notifications/' + id), payload).then(() => {
