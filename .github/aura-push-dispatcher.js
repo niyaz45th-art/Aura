@@ -195,6 +195,8 @@ async function handleTransactions(state, settings) {
   state.lastRunAt = now();
   await setState(state);
   console.log("Aura push dispatcher completed:", new Date(state.lastRunAt).toISOString());
+  await admin.app().delete().catch(()=>{});
+  process.exit(0);
 })().catch(err => {
   console.error(err);
   process.exit(1);
