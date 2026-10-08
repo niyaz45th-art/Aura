@@ -1973,6 +1973,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
         import { getDatabase, ref, set, onValue, push, update, get, query, orderByChild, equalTo, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+        import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
 
         // CONFIG
         const firebaseConfig = {
@@ -1987,6 +1988,52 @@
 
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
+        const VAPID_KEY = "BPkCE32UnjWTBCwxGxqkQi1IGkEavbPFBP1cOdqJoJHBD2b1xatc0Ztxyvk8H1owsBPDqHeqP2vs5JuWcsKc5vk";
+        let messaging = null;
+        let currentFcmToken = null;
+
+        // --- WEB PUSH / FCM ---
+        async function initUserPushNotifications(user) {
+            if (!user) return;
+            try {
+                if (!(await isSupported())) return;
+                const permission = await Notification.requestPermission();
+                if (permission !== 'granted') {
+                    console.warn('User notification permission was not granted.');
+                    return;
+                }
+
+                // firebase-messaging-sw.js must be deployed at the website root.
+                const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+                messaging = getMessaging(app);
+
+                const token = await getToken(messaging, {
+                    vapidKey: VAPID_KEY,
+                    serviceWorkerRegistration: registration
+                });
+                if (!token) return;
+                currentFcmToken = token;
+
+                // Keep multiple devices/browsers for the same account.
+                await push(ref(db, `fcmTokens/users/${user.uid}`), {
+                    token,
+                    updatedAt: Date.now(),
+                    platform: 'web'
+                });
+
+                onMessage(messaging, (payload) => {
+                    console.log('Foreground FCM message:', payload);
+                    const title = payload.notification?.title || payload.data?.title || 'Notification';
+                    const body = payload.notification?.body || payload.data?.body || '';
+                    // Show a visible in-app notification while the page is active.
+                    if (Notification.permission === 'granted') {
+                        new Notification(title, { body, icon: '/favicon.ico', tag: payload.data?.tag || 'firebase-push' });
+                    }
+                });
+            } catch (error) {
+                console.error('User FCM setup failed:', error);
+            }
+        }
 
         // --- THEME LOGIC ---
         window.toggleUserTheme = () => {
@@ -2307,6 +2354,7 @@
             if (user) {
                 currentUser = user;
                 initUserJoinedMatchesListener(user);
+                initUserPushNotifications(user);
                 updateUIForLogin(user);
                 loadHistory();
             } else {
